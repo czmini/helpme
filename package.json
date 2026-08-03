@@ -1,0 +1,17 @@
+{
+    "name": "api",
+    "version": "7.3.0",
+    "description": "gmxch_Api",
+    "scripts": {
+        "start": "node Api.js",
+        "dev": "nodemon Api.js"
+    },
+    "dependencies": {
+        "express": "^5.1.0",
+        "puppeteer-real-browser": "^1.4.0"
+    },
+    "devDependencies": {
+        "nodemon": "^3.1.10"
+    },
+    "license": "MIT"
+}
