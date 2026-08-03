@@ -1,26 +1,45 @@
-FROM python:3.9-slim
+# ==========================================================
+# BASE IMAGE
+# ==========================================================
+
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV NODE_ENV=production
+
+# Chrome / Browser
+ENV DISPLAY=:99
+ENV CHROME_BIN=/usr/bin/google-chrome
+ENV CHROME_PATH=/usr/bin/google-chrome
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+WORKDIR /app
+
 
 # ==========================================================
-# System
+# SYSTEM DEPENDENCIES
 # ==========================================================
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        ca-certificates \
         curl \
         wget \
         unzip \
+        gnupg \
         xvfb \
         dumb-init \
-        ca-certificates \
-        gnupg \
+        procps \
         fonts-liberation \
         fonts-noto-color-emoji \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \
         libcups2 \
+        libdbus-1-3 \
         libdrm2 \
         libgbm1 \
         libglib2.0-0 \
@@ -39,138 +58,299 @@ RUN apt-get update && \
         libxkbcommon0 \
         libxrandr2 \
         libxrender1 \
-        libxshmfence1 && \
-    rm -rf /var/lib/apt/lists/*
+        libxshmfence1 \
+        libxss1 \
+        libxtst6 \
+    && rm -rf /var/lib/apt/lists/*
+
 
 # ==========================================================
-# Google Chrome
+# GOOGLE CHROME
 # ==========================================================
 
 RUN mkdir -p /etc/apt/keyrings && \
-    wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/keyrings/google.gpg && \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
+    wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+        | gpg --dearmor -o /etc/apt/keyrings/google.gpg && \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list && \
     apt-get update && \
-    apt-get install -y google-chrome-stable && \
+    apt-get install -y --no-install-recommends google-chrome-stable && \
     rm -rf /var/lib/apt/lists/*
 
+
 # ==========================================================
-# NodeJS
+# NODE.JS 20
 # ==========================================================
 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g npm@latest && \
-    npm cache clean --force
+    apt-get update && \
+    apt-get install -y --no-install-recommends nodejs && \
+    npm install -g npm@10 && \
+    npm cache clean --force && \
+    rm -rf /var/lib/apt/lists/*
+
 
 # ==========================================================
-# Environment
+# CHECK VERSIONS
 # ==========================================================
 
-ENV DISPLAY=:99
-ENV PYTHONUNBUFFERED=1
-ENV NODE_ENV=production
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV CHROME_BIN=/usr/bin/google-chrome
-ENV CHROME_PATH=/usr/bin/google-chrome
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN python --version && \
+    pip --version && \
+    node --version && \
+    npm --version && \
+    google-chrome --version
 
-WORKDIR /app
 
 # ==========================================================
-# Copy Files
+# PYTHON REQUIREMENTS
 # ==========================================================
 
-COPY requirements.txt .
-COPY Api.zip .
+COPY requirements.txt /app/requirements.txt
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r /app/requirements.txt
+
 
 # ==========================================================
-# Extract Api
+# COPY API
 # ==========================================================
 
-RUN unzip Api.zip && \
-    rm Api.zip
+COPY Api.zip /app/Api.zip
+
 
 # ==========================================================
-# Python
+# EXTRACT API
 # ==========================================================
 
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+RUN unzip -q /app/Api.zip -d /app/ && \
+    rm -f /app/Api.zip
+
 
 # ==========================================================
-# Node
+# FIND / NORMALIZE API DIRECTORY
+# ==========================================================
+
+RUN if [ ! -f /app/Api/Api.js ]; then \
+        echo "ERROR: /app/Api/Api.js tidak ditemukan"; \
+        echo "Isi /app:"; \
+        find /app -maxdepth 3 -type f | sort; \
+        exit 1; \
+    fi
+
+
+# ==========================================================
+# NODE DEPENDENCIES
 # ==========================================================
 
 WORKDIR /app/Api
 
-RUN npm install --omit=dev
+RUN if [ -f package-lock.json ]; then \
+        npm ci --omit=dev; \
+    else \
+        npm install --omit=dev; \
+    fi
 
-RUN npm install \
-    generic-pool \
-    p-queue@7 \
-    jimp \
-    tesseract.js \
-    playwright
+
+# ==========================================================
+# ADDITIONAL NODE MODULES
+# ==========================================================
+
+RUN npm install --omit=dev \
+        generic-pool \
+        p-queue@7 \
+        jimp \
+        tesseract.js \
+        playwright
+
+
+# ==========================================================
+# VERIFY NODE MODULES
+# ==========================================================
+
+RUN node -e "require('generic-pool'); console.log('generic-pool OK')" && \
+    node -e "require('p-queue'); console.log('p-queue OK')" && \
+    node -e "require('jimp'); console.log('jimp OK')" && \
+    node -e "require('tesseract.js'); console.log('tesseract.js OK')" && \
+    node -e "require('playwright'); console.log('playwright OK')"
+
+
+# ==========================================================
+# VERIFY CHROME
+# ==========================================================
+
+RUN google-chrome \
+        --headless \
+        --no-sandbox \
+        --disable-dev-shm-usage \
+        --disable-gpu \
+        --dump-dom \
+        https://example.com \
+        >/tmp/chrome-test.html 2>/tmp/chrome-test.log \
+    || (cat /tmp/chrome-test.log && exit 1)
+
+RUN grep -qi "Example Domain" /tmp/chrome-test.html || \
+    (echo "Chrome test gagal"; cat /tmp/chrome-test.html; exit 1)
+
+
+# ==========================================================
+# BACK TO APP
+# ==========================================================
 
 WORKDIR /app
 
+
 # ==========================================================
-# Startup Script
+# STARTUP SCRIPT
 # ==========================================================
 
 RUN cat > /start.sh <<'EOF'
 #!/bin/bash
-set -e
 
-echo "=================================="
-echo " Starting Container"
-echo "=================================="
+set -u
+
+echo "=============================================="
+echo " Container Starting"
+echo "=============================================="
+
+APP_PID=0
+API_PID=0
+XVFB_PID=0
 
 cleanup() {
     echo ""
-    echo "Stopping..."
+    echo "=============================================="
+    echo " Stopping Container"
+    echo "=============================================="
 
-    kill ${APP_PID:-0} 2>/dev/null || true
-    kill ${API_PID:-0} 2>/dev/null || true
+    if [ "$APP_PID" -ne 0 ] 2>/dev/null; then
+        kill "$APP_PID" 2>/dev/null || true
+    fi
 
-    pkill -f Api.js || true
-    pkill -f app.py || true
+    if [ "$API_PID" -ne 0 ] 2>/dev/null; then
+        kill "$API_PID" 2>/dev/null || true
+    fi
 
-    exit 0
+    if [ "$XVFB_PID" -ne 0 ] 2>/dev/null; then
+        kill "$XVFB_PID" 2>/dev/null || true
+    fi
+
+    pkill -f "Api.js" 2>/dev/null || true
+    pkill -f "Xvfb :99" 2>/dev/null || true
+
+    echo "Container stopped."
 }
 
-trap cleanup SIGINT SIGTERM
+trap cleanup SIGINT SIGTERM EXIT
+
+
+# ==========================================================
+# ENVIRONMENT
+# ==========================================================
 
 export DISPLAY=:99
+export CHROME_BIN=/usr/bin/google-chrome
+export CHROME_PATH=/usr/bin/google-chrome
+export PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome
 
-if ! pgrep -x Xvfb >/dev/null; then
-    rm -f /tmp/.X99-lock
-    rm -rf /tmp/.X11-unix/X99
 
-    echo "Starting Xvfb..."
+echo ""
+echo "Python:"
+python --version
 
-    Xvfb :99 \
-        -screen 0 1366x768x24 \
-        -ac \
-        +extension RANDR >/tmp/xvfb.log 2>&1 &
+echo ""
+echo "Node:"
+node --version
 
-    sleep 2
-else
-    echo "Xvfb already running."
+echo ""
+echo "Chrome:"
+google-chrome --version
+
+echo ""
+echo "DISPLAY=$DISPLAY"
+echo "CHROME_BIN=$CHROME_BIN"
+
+
+# ==========================================================
+# CLEAN OLD X SERVER
+# ==========================================================
+
+rm -f /tmp/.X99-lock
+rm -rf /tmp/.X11-unix/X99
+
+
+# ==========================================================
+# START XVFB
+# ==========================================================
+
+echo ""
+echo "Starting Xvfb..."
+
+Xvfb :99 \
+    -screen 0 1366x768x24 \
+    -ac \
+    -nolisten tcp \
+    +extension RANDR \
+    >/tmp/xvfb.log 2>&1 &
+
+XVFB_PID=$!
+
+sleep 2
+
+if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+    echo "ERROR: Xvfb gagal start"
+    cat /tmp/xvfb.log || true
+    exit 1
 fi
 
-echo "Starting Api.js..."
+echo "Xvfb started. PID=$XVFB_PID"
+
+
+# ==========================================================
+# START API
+# ==========================================================
+
+echo ""
+echo "=============================================="
+echo " Starting Api.js"
+echo "=============================================="
 
 cd /app/Api
 
-node --expose-gc --no-deprecation Api.js &
+node --expose-gc --no-deprecation Api.js \
+    >/tmp/api.log 2>&1 &
+
 API_PID=$!
 
-echo "Waiting API..."
+echo "API PID: $API_PID"
+
+
+# ==========================================================
+# WAIT API
+# ==========================================================
+
+echo ""
+echo "Waiting for API on port 8080..."
+
+API_READY=0
 
 for i in $(seq 1 120); do
-    if curl -fs http://127.0.0.1:8080 >/dev/null 2>&1; then
-        echo "API Ready"
+
+    if ! kill -0 "$API_PID" 2>/dev/null; then
+        echo ""
+        echo "ERROR: Api.js berhenti sebelum ready."
+        echo "========== API LOG =========="
+        cat /tmp/api.log || true
+        echo "============================="
+        exit 1
+    fi
+
+    if curl -fsS \
+        --max-time 3 \
+        http://127.0.0.1:8080 \
+        >/dev/null 2>&1; then
+
+        API_READY=1
+        echo "API Ready!"
         break
     fi
 
@@ -178,38 +358,123 @@ for i in $(seq 1 120); do
     sleep 1
 done
 
-curl -fs http://127.0.0.1:8080 >/dev/null
+
+# ==========================================================
+# API TIMEOUT
+# ==========================================================
+
+if [ "$API_READY" -ne 1 ]; then
+
+    echo ""
+    echo "ERROR: API tidak ready setelah 120 detik."
+
+    echo ""
+    echo "========== API LOG =========="
+    cat /tmp/api.log || true
+    echo "============================="
+
+    echo ""
+    echo "========== XVFB LOG =========="
+    cat /tmp/xvfb.log || true
+    echo "=============================="
+
+    exit 1
+fi
 
 
+# ==========================================================
+# FINAL STATUS
+# ==========================================================
 
-cd /app
+echo ""
+echo "=============================================="
+echo " API STATUS"
+echo "=============================================="
+
+echo "API PID   : $API_PID"
+echo "Xvfb PID  : $XVFB_PID"
+echo "API       : http://127.0.0.1:8080"
+echo "Chrome    : $CHROME_BIN"
+echo "Display   : $DISPLAY"
+
+echo ""
+echo "API is running."
+echo "Container is ready."
+echo "=============================================="
 
 
+# ==========================================================
+# KEEP CONTAINER ALIVE
+# ==========================================================
 
-echo "API PID : $API_PID"
+while true; do
 
+    if ! kill -0 "$API_PID" 2>/dev/null; then
+        echo ""
+        echo "ERROR: Api.js berhenti."
 
-wait -n $API_PID 
+        echo ""
+        echo "========== API LOG =========="
+        cat /tmp/api.log || true
+        echo "============================="
 
-cleanup
+        exit 1
+    fi
+
+    if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+        echo ""
+        echo "ERROR: Xvfb berhenti."
+
+        echo ""
+        echo "========== XVFB LOG =========="
+        cat /tmp/xvfb.log || true
+        echo "=============================="
+
+        exit 1
+    fi
+
+    sleep 10
+
+done
 
 EOF
 
-RUN chmod +x /start.sh
 
 # ==========================================================
-# Health Check
+# PERMISSIONS
+# ==========================================================
+
+RUN chmod +x /start.sh
+
+
+# ==========================================================
+# HEALTH CHECK
 # ==========================================================
 
 HEALTHCHECK \
---interval=30s \
---timeout=10s \
---start-period=30s \
---retries=5 \
-CMD curl -fs http://127.0.0.1:8080 || exit 1
+    --interval=30s \
+    --timeout=10s \
+    --start-period=60s \
+    --retries=5 \
+    CMD curl -fsS --max-time 5 http://127.0.0.1:8080 || exit 1
+
+
+# ==========================================================
+# PORT
+# ==========================================================
 
 EXPOSE 8080
 
-ENTRYPOINT ["dumb-init","--"]
+
+# ==========================================================
+# INIT
+# ==========================================================
+
+ENTRYPOINT ["dumb-init", "--"]
+
+
+# ==========================================================
+# START
+# ==========================================================
 
 CMD ["/start.sh"]
